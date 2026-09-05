@@ -1,0 +1,11 @@
+// Vuetify SASS 变量覆盖入口。
+// vite.config.ts 里 vuetify({ styles: { configFile: ... } }) 指向本文件，
+// 因此 `import 'vuetify/styles'` 会被重写到这里。
+//
+// 覆盖示例（取消注释即可生效）：
+// @use 'vuetify/settings' with (
+//   $body-font-family: ('Roboto', sans-serif),
+//   $border-radius-root: 6px
+// );
+
+@use 'vuetify/settings';
