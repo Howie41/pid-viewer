@@ -11,6 +11,8 @@ import {
 } from '@/protocol/pidProtocol'
 import type { AckFrame, MonitorFrame, PidInfoFrame, ReceivedFrame } from '@/protocol/pidProtocol'
 import { PidSerialTransport } from '@/services/pidSerialTransport'
+import { PidTestDataSource } from '@/services/pidTestDataSource'
+import type { PidTestSample } from '@/services/pidTestDataSource'
 
 export type ConnectionStatus =
   'unsupported' | 'disconnected' | 'connecting' | 'discovering' | 'connected' | 'error'
@@ -45,8 +47,11 @@ type FrameWaiter = {
   timer: number
 }
 
-const maxSamplesPerChannel = 60_000
-const sampleTrimBatch = 1000
+export const minimumHistoryDurationMs = 1000
+export const maximumHistoryDurationMs = 60 * 60_000
+export const defaultHistoryDurationMs = 10 * 60_000
+const historyDurationStorageKey = 'pid-viewer.history-duration-ms'
+const historyTrimMarginMs = 5000
 const monitorFlushIntervalMs = 50
 const responseTimeoutMs = 800
 const maxReadRetries = 3
@@ -62,6 +67,14 @@ function createEmptyChannels(): MonitorChannel[] {
 
 function asError(error: unknown) {
   return error instanceof Error ? error : new Error(String(error))
+}
+
+function loadHistoryDuration() {
+  if (typeof localStorage === 'undefined') return defaultHistoryDurationMs
+  const value = Number(localStorage.getItem(historyDurationStorageKey))
+  return Number.isFinite(value)
+    ? Math.min(maximumHistoryDurationMs, Math.max(minimumHistoryDurationMs, Math.round(value)))
+    : defaultHistoryDurationMs
 }
 
 function ackError(status: AckStatus) {
@@ -83,10 +96,15 @@ export const usePidStore = defineStore('pid', () => {
   const instances = ref<PidInstance[]>([])
   const channels = shallowRef<MonitorChannel[]>(createEmptyChannels())
   const lastTimestamp = ref(0)
+  const historyDurationMs = ref(loadHistoryDuration())
+  const testMode = ref(false)
   const waiters: FrameWaiter[] = []
   const pendingMonitorFrames: MonitorFrame[] = []
+  const pendingTestSamples: PidTestSample[] = []
   let transport: PidSerialTransport | undefined
+  let testDataSource: PidTestDataSource | undefined
   let monitorFlushTimer: number | undefined
+  let testFlushTimer: number | undefined
 
   const connected = computed(() => connectionStatus.value === 'connected')
   const busy = computed(
@@ -104,6 +122,29 @@ export const usePidStore = defineStore('pid', () => {
     const index = instances.value.findIndex((item) => item.id === pidId)
     if (index === -1) return
     instances.value[index] = { ...instances.value[index], ref: refValue, measure }
+  }
+
+  function trimSamples(samples: MonitorSample[], latestTimestamp: number, force = false) {
+    const cutoff = latestTimestamp - historyDurationMs.value
+    const firstTimestamp = samples[0]?.timestamp
+    if (
+      firstTimestamp === undefined ||
+      (!force && firstTimestamp >= cutoff - historyTrimMarginMs)
+    ) {
+      return false
+    }
+
+    let low = 0
+    let high = samples.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      const sample = samples[middle]
+      if (sample && sample.timestamp < cutoff) low = middle + 1
+      else high = middle
+    }
+    if (low === 0) return false
+    samples.splice(0, low)
+    return true
   }
 
   function flushMonitorFrames() {
@@ -150,9 +191,7 @@ export const usePidStore = defineStore('pid', () => {
       }
 
       if (!changed) continue
-      if (samples.length > maxSamplesPerChannel + sampleTrimBatch) {
-        samples.splice(0, samples.length - maxSamplesPerChannel)
-      }
+      trimSamples(samples, frames.at(-1)?.timestamp ?? lastTimestamp.value)
       nextChannels[index] = {
         id: previous.id,
         pidId,
@@ -177,6 +216,79 @@ export const usePidStore = defineStore('pid', () => {
     if (monitorFlushTimer !== undefined) window.clearTimeout(monitorFlushTimer)
     monitorFlushTimer = undefined
     pendingMonitorFrames.length = 0
+  }
+
+  function flushTestSamples() {
+    testFlushTimer = undefined
+    if (!testMode.value || pendingTestSamples.length === 0) return
+
+    const incoming = pendingTestSamples.splice(0)
+    const channel = channels.value[0]
+    if (!channel) return
+
+    const samples = channel.samples
+    samples.push(...incoming)
+    const latest = incoming.at(-1)?.timestamp ?? lastTimestamp.value
+    trimSamples(samples, latest)
+    channels.value = [
+      { ...channel, samples, revision: channel.revision + 1 },
+      ...channels.value.slice(1),
+    ]
+    lastTimestamp.value = latest
+    updateInstanceValues(0, incoming.at(-1)?.ref ?? 0, incoming.at(-1)?.measure ?? 0)
+  }
+
+  function handleTestSample(sample: PidTestSample) {
+    if (!testMode.value) return
+    pendingTestSamples.push(sample)
+    if (testFlushTimer !== undefined) return
+    testFlushTimer = window.setTimeout(flushTestSamples, monitorFlushIntervalMs)
+  }
+
+  function clearPendingTestSamples() {
+    if (testFlushTimer !== undefined) window.clearTimeout(testFlushTimer)
+    testFlushTimer = undefined
+    pendingTestSamples.length = 0
+  }
+
+  function setHistoryDurationMs(duration: number) {
+    const normalized = Math.min(
+      maximumHistoryDurationMs,
+      Math.max(minimumHistoryDurationMs, Math.round(duration)),
+    )
+    historyDurationMs.value = normalized
+    localStorage.setItem(historyDurationStorageKey, String(normalized))
+
+    channels.value = channels.value.map((channel) => {
+      if (!trimSamples(channel.samples, channel.samples.at(-1)?.timestamp ?? 0, true))
+        return channel
+      return { ...channel, revision: channel.revision + 1 }
+    })
+  }
+
+  function setTestMode(enabled: boolean) {
+    if (enabled === testMode.value) return true
+    if (enabled && (connected.value || busy.value)) return false
+
+    clearPendingTestSamples()
+    testDataSource?.stop()
+    testDataSource = undefined
+    testMode.value = enabled
+
+    if (!enabled) {
+      instances.value = []
+      channels.value = createEmptyChannels()
+      lastTimestamp.value = 0
+      return true
+    }
+
+    instances.value = [{ id: 0, name: '测试信号', kp: 0, ki: 0, kd: 0, ref: 0, measure: 0 }]
+    channels.value = createEmptyChannels()
+    channels.value[0] = { id: 0, pidId: 0, samples: [], revision: 1 }
+    lastTimestamp.value = 0
+    testDataSource = markRaw(new PidTestDataSource({ onSample: handleTestSample }))
+    testDataSource.start()
+    return true
   }
 
   function handleFrame(frame: ReceivedFrame) {
@@ -314,6 +426,8 @@ export const usePidStore = defineStore('pid', () => {
   async function connect() {
     if (!supported || busy.value || connected.value) return
 
+    setTestMode(false)
+
     if (transport) {
       await transport.disconnect().catch(() => undefined)
       transport = undefined
@@ -379,10 +493,14 @@ export const usePidStore = defineStore('pid', () => {
     instances,
     channels,
     lastTimestamp,
+    historyDurationMs,
+    testMode,
     connected,
     busy,
     connect,
     disconnect,
+    setHistoryDurationMs,
+    setTestMode,
     discoverPidInstances,
     selectChannels,
     setPid,

@@ -30,9 +30,10 @@ const props = withDefaults(
     pidName?: string
     revision: number
     samples: MonitorSample[]
+    historyDurationMs?: number
     timeWindowMs?: number
   }>(),
-  { canSelectPid: false, pidName: '', timeWindowMs: 30_000 },
+  { canSelectPid: false, historyDurationMs: 10 * 60_000, pidName: '', timeWindowMs: 30_000 },
 )
 const emit = defineEmits<{
   selectPid: [channelId: number]
@@ -93,7 +94,7 @@ function syncData() {
     return
   }
 
-  historyStartTimestamp = firstTick
+  historyStartTimestamp = Math.max(firstTick, lastTick - props.historyDurationMs)
   latestTimestamp = lastTick
   if (followingLatest.value || viewEndTimestamp === 0) viewEndTimestamp = latestTimestamp
   else
@@ -102,7 +103,10 @@ function syncData() {
   visibleDurationMs.value = Math.max(minimumTimeWindowMs, visibleDurationMs.value)
   viewStartTimestamp = viewEndTimestamp - visibleDurationMs.value
 
-  const startIndex = Math.max(0, findWindowStart(props.samples, viewStartTimestamp) - 1)
+  const startIndex = Math.max(
+    0,
+    findWindowStart(props.samples, Math.max(historyStartTimestamp, viewStartTimestamp)) - 1,
+  )
   const endIndex = Math.min(
     props.samples.length,
     findWindowEnd(props.samples, viewEndTimestamp) + 1,
@@ -363,6 +367,13 @@ watch(
   () => props.timeWindowMs,
   (duration) => {
     visibleDurationMs.value = duration
+    syncData()
+    renderChart()
+  },
+)
+watch(
+  () => props.historyDurationMs,
+  () => {
     syncData()
     renderChart()
   },

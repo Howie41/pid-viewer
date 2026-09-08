@@ -3,10 +3,12 @@ import { onBeforeUnmount, ref } from 'vue'
 import DarkModeButton from '@/components/DarkModeButton.vue'
 import PidChannelChart from '@/components/PidChannelChart.vue'
 import PidInstanceDialog from '@/components/PidInstanceDialog.vue'
+import SettingsDialog from '@/components/SettingsDialog.vue'
 import { usePidStore } from '@/stores/pid'
 
 const pidStore = usePidStore()
 const pidDialogOpen = ref(false)
+const settingsDialogOpen = ref(false)
 const selectedChannelId = ref<number>()
 
 const statusLabels = {
@@ -33,6 +35,7 @@ function openPidSelector(channelId: number) {
 }
 
 onBeforeUnmount(() => {
+  pidStore.setTestMode(false)
   void pidStore.disconnect()
 })
 </script>
@@ -42,7 +45,7 @@ onBeforeUnmount(() => {
     <v-app-bar-title>PID Viewer</v-app-bar-title>
     <v-spacer />
     <v-chip class="mr-2" size="small" variant="outlined">
-      {{ statusLabels[pidStore.connectionStatus] }}
+      {{ pidStore.testMode ? '测试模式' : statusLabels[pidStore.connectionStatus] }}
     </v-chip>
     <v-btn
       :disabled="pidStore.connectionStatus === 'unsupported'"
@@ -54,6 +57,13 @@ onBeforeUnmount(() => {
     >
       {{ pidStore.connected ? '断开' : '连接串口' }}
     </v-btn>
+    <v-btn
+      icon="mdi-cog-outline"
+      aria-label="打开设置"
+      title="设置"
+      variant="text"
+      @click="settingsDialogOpen = true"
+    />
     <DarkModeButton />
   </v-app-bar>
 
@@ -68,6 +78,8 @@ onBeforeUnmount(() => {
             :pid-name="getPidName(channel.pidId)"
             :revision="channel.revision"
             :samples="channel.samples"
+            :history-duration-ms="pidStore.historyDurationMs"
+            :time-window-ms="Math.min(30_000, pidStore.historyDurationMs)"
             @select-pid="openPidSelector"
           />
         </v-col>
@@ -76,4 +88,5 @@ onBeforeUnmount(() => {
   </v-main>
 
   <PidInstanceDialog v-model="pidDialogOpen" :channel-id="selectedChannelId" />
+  <SettingsDialog v-model="settingsDialogOpen" />
 </template>
