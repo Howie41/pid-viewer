@@ -45,7 +45,8 @@ type FrameWaiter = {
   timer: number
 }
 
-const maxSamplesPerChannel = 6000
+const maxSamplesPerChannel = 60_000
+const sampleTrimBatch = 1000
 const monitorFlushIntervalMs = 50
 const responseTimeoutMs = 800
 const maxReadRetries = 3
@@ -149,7 +150,7 @@ export const usePidStore = defineStore('pid', () => {
       }
 
       if (!changed) continue
-      if (samples.length > maxSamplesPerChannel) {
+      if (samples.length > maxSamplesPerChannel + sampleTrimBatch) {
         samples.splice(0, samples.length - maxSamplesPerChannel)
       }
       nextChannels[index] = {

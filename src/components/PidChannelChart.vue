@@ -39,15 +39,23 @@ const emit = defineEmits<{
 }>()
 
 const unusedPidId = 0xff
+const minimumTimeWindowMs = 100
+const pointsPerPixel = 2
 const theme = useTheme()
 const chartElement = ref<HTMLDivElement>()
 const paused = ref(false)
 const followingLatest = ref(true)
+const visibleDurationMs = ref(props.timeWindowMs)
 const active = computed(() => props.pidId !== unusedPidId)
 const isDark = computed(() => theme.global.current.value.dark)
 let chart: echarts.ECharts | undefined
 let resizeObserver: ResizeObserver | undefined
+let resizeFrame: number | undefined
 let displayedSamples: MonitorSample[] = []
+let historyStartTimestamp = 0
+let latestTimestamp = 0
+let viewStartTimestamp = 0
+let viewEndTimestamp = 0
 
 function findWindowStart(samples: MonitorSample[], minimumTimestamp: number) {
   let low = 0
@@ -61,31 +69,129 @@ function findWindowStart(samples: MonitorSample[], minimumTimestamp: number) {
   return low
 }
 
+function findWindowEnd(samples: MonitorSample[], maximumTimestamp: number) {
+  let low = 0
+  let high = samples.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    const sample = samples[middle]
+    if (sample && sample.timestamp <= maximumTimestamp) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
 function syncData() {
+  const firstTick = props.samples[0]?.timestamp
   const lastTick = props.samples.at(-1)?.timestamp
-  if (lastTick === undefined) {
+  if (firstTick === undefined || lastTick === undefined) {
     displayedSamples = []
+    historyStartTimestamp = 0
+    latestTimestamp = 0
+    viewStartTimestamp = 0
+    viewEndTimestamp = 1000
     return
   }
 
-  const startIndex = findWindowStart(props.samples, lastTick - props.timeWindowMs)
-  displayedSamples = props.samples.slice(startIndex)
+  historyStartTimestamp = firstTick
+  latestTimestamp = lastTick
+  if (followingLatest.value || viewEndTimestamp === 0) viewEndTimestamp = latestTimestamp
+  else
+    viewEndTimestamp = Math.min(Math.max(viewEndTimestamp, historyStartTimestamp), latestTimestamp)
+
+  visibleDurationMs.value = Math.max(minimumTimeWindowMs, visibleDurationMs.value)
+  viewStartTimestamp = viewEndTimestamp - visibleDurationMs.value
+
+  const startIndex = Math.max(0, findWindowStart(props.samples, viewStartTimestamp) - 1)
+  const endIndex = Math.min(
+    props.samples.length,
+    findWindowEnd(props.samples, viewEndTimestamp) + 1,
+  )
+  displayedSamples = props.samples.slice(startIndex, endIndex)
+}
+
+function buildSeriesData(valueKey: 'ref' | 'measure') {
+  const maxPoints = Math.max(200, Math.floor((chart?.getWidth() ?? 800) * pointsPerPixel))
+  if (displayedSamples.length <= maxPoints) {
+    return displayedSamples.map((sample) => [sample.timestamp, sample[valueKey]])
+  }
+
+  const data: number[][] = []
+  const bucketCount = Math.max(1, Math.floor((maxPoints - 2) / 2))
+  const bucketSize = (displayedSamples.length - 2) / bucketCount
+  data.push([displayedSamples[0]!.timestamp, displayedSamples[0]![valueKey]])
+
+  for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    const start = 1 + Math.floor(bucket * bucketSize)
+    const end = Math.min(displayedSamples.length - 1, 1 + Math.floor((bucket + 1) * bucketSize))
+    let minimumIndex = start
+    let maximumIndex = start
+
+    for (let index = start + 1; index < end; index += 1) {
+      const sample = displayedSamples[index]!
+      if (sample[valueKey] < displayedSamples[minimumIndex]![valueKey]) minimumIndex = index
+      if (sample[valueKey] > displayedSamples[maximumIndex]![valueKey]) maximumIndex = index
+    }
+
+    for (const index of [minimumIndex, maximumIndex].sort((left, right) => left - right)) {
+      const sample = displayedSamples[index]!
+      if (sample.timestamp === data.at(-1)?.[0]) continue
+      data.push([sample.timestamp, sample[valueKey]])
+    }
+  }
+
+  const lastSample = displayedSamples.at(-1)!
+  if (data.at(-1)?.[0] !== lastSample.timestamp) {
+    data.push([lastSample.timestamp, lastSample[valueKey]])
+  }
+  return data
+}
+
+function findNearestSample(timestamp: number) {
+  if (displayedSamples.length === 0) return undefined
+  const index = findWindowStart(displayedSamples, timestamp)
+  const before = displayedSamples[Math.max(0, index - 1)]
+  const after = displayedSamples[Math.min(displayedSamples.length - 1, index)]
+  if (!before) return after
+  if (!after) return before
+  return timestamp - before.timestamp <= after.timestamp - timestamp ? before : after
+}
+
+function formatTooltip(params: unknown) {
+  const entries = Array.isArray(params) ? params : [params]
+  const firstEntry = entries[0] as { axisValue?: number | string } | undefined
+  const timestamp = Number(firstEntry?.axisValue)
+  const sample = Number.isFinite(timestamp) ? findNearestSample(timestamp) : undefined
+  if (!sample) return ''
+
+  return [
+    `<strong>${sample.timestamp.toLocaleString()} ms</strong>`,
+    `<span style="color:#5470c6">●</span> ref&nbsp;&nbsp;&nbsp;${sample.ref.toFixed(2)}`,
+    `<span style="color:#91cc75">●</span> measure&nbsp;&nbsp;&nbsp;${sample.measure.toFixed(2)}`,
+  ].join('<br>')
+}
+
+function formatDuration(durationMs: number) {
+  if (durationMs < 1000) return `${Math.round(durationMs)} ms`
+  if (durationMs < 60_000) return `${(durationMs / 1000).toFixed(durationMs < 10_000 ? 1 : 0)} s`
+  return `${(durationMs / 60_000).toFixed(durationMs < 600_000 ? 1 : 0)} min`
 }
 
 function getChartOption(): EChartsCoreOption {
   const textColor = isDark.value ? '#bdbdbd' : '#616161'
   const axisColor = isDark.value ? '#616161' : '#bdbdbd'
   const splitLineColor = isDark.value ? '#424242' : '#eeeeee'
-  const lastTick = displayedSamples.at(-1)?.timestamp ?? 1000
-  const windowStart = lastTick - props.timeWindowMs
+  const axisMinimum = Math.min(historyStartTimestamp, viewStartTimestamp)
+  const axisMaximum = Math.max(latestTimestamp, viewEndTimestamp, axisMinimum + 1)
 
   return {
     animation: false,
     tooltip: active.value
       ? {
           trigger: 'axis',
-          valueFormatter: (value: unknown) =>
-            typeof value === 'number' ? value.toFixed(2) : String(value),
+          axisPointer: { type: 'cross', snap: true },
+          formatter: formatTooltip,
+          confine: true,
         }
       : undefined,
     legend: {
@@ -107,7 +213,9 @@ function getChartOption(): EChartsCoreOption {
             zoomOnMouseWheel: true,
             moveOnMouseMove: true,
             moveOnMouseWheel: false,
-            ...(followingLatest.value ? { start: 0, end: 100 } : {}),
+            startValue: viewStartTimestamp,
+            endValue: viewEndTimestamp,
+            minValueSpan: minimumTimeWindowMs,
           },
         ]
       : [],
@@ -116,8 +224,8 @@ function getChartOption(): EChartsCoreOption {
       name: 'Timestamp (ms)',
       nameLocation: 'middle',
       nameGap: 30,
-      min: active.value ? windowStart : 0,
-      max: active.value ? lastTick : 1000,
+      min: active.value ? axisMinimum : 0,
+      max: active.value ? axisMaximum : 1000,
       axisLabel: { color: textColor },
       axisLine: { lineStyle: { color: axisColor } },
       splitLine: { lineStyle: { color: splitLineColor } },
@@ -149,18 +257,16 @@ function getChartOption(): EChartsCoreOption {
             type: 'line',
             showSymbol: false,
             lineStyle: { type: 'dashed', width: 1.5 },
-            sampling: 'lttb',
             animation: false,
-            data: displayedSamples.map((sample) => [sample.timestamp, sample.ref]),
+            data: buildSeriesData('ref'),
           },
           {
             name: 'measure',
             type: 'line',
             showSymbol: false,
             smooth: false,
-            sampling: 'lttb',
             animation: false,
-            data: displayedSamples.map((sample) => [sample.timestamp, sample.measure]),
+            data: buildSeriesData('measure'),
           },
         ]
       : [],
@@ -183,8 +289,48 @@ function togglePlayback() {
   }
 }
 
-function handleDataZoom() {
-  followingLatest.value = false
+function handleDataZoom(event: unknown) {
+  const dataZoomEvent = event as {
+    start?: number
+    end?: number
+    startValue?: number
+    endValue?: number
+    batch?: Array<{
+      start?: number
+      end?: number
+      startValue?: number
+      endValue?: number
+    }>
+  }
+  const range = dataZoomEvent.batch?.[0] ?? dataZoomEvent
+  const axisMinimum = Math.min(historyStartTimestamp, viewStartTimestamp)
+  const axisMaximum = Math.max(latestTimestamp, viewEndTimestamp, axisMinimum + 1)
+  const axisDuration = axisMaximum - axisMinimum
+  const startValue =
+    typeof range.startValue === 'number'
+      ? range.startValue
+      : axisMinimum + ((range.start ?? 0) / 100) * axisDuration
+  const endValue =
+    typeof range.endValue === 'number'
+      ? range.endValue
+      : axisMinimum + ((range.end ?? 100) / 100) * axisDuration
+
+  const nextDuration = Math.min(axisDuration, Math.max(minimumTimeWindowMs, endValue - startValue))
+  const durationChanged =
+    Math.abs(nextDuration - visibleDurationMs.value) > Math.max(2, visibleDurationMs.value * 0.005)
+
+  if (followingLatest.value && durationChanged) {
+    visibleDurationMs.value = nextDuration
+    viewEndTimestamp = latestTimestamp
+  } else {
+    const atLatest = latestTimestamp - endValue <= Math.max(20, nextDuration * 0.01)
+    visibleDurationMs.value = nextDuration
+    followingLatest.value = atLatest
+    viewEndTimestamp = atLatest ? latestTimestamp : endValue
+  }
+
+  syncData()
+  renderChart()
 }
 
 function returnToLatest() {
@@ -195,13 +341,31 @@ function returnToLatest() {
 }
 
 watch(
-  () => [props.revision, props.pidId, props.timeWindowMs],
+  () => props.revision,
   () => {
     if (paused.value || !followingLatest.value) return
     syncData()
     renderChart()
   },
   { immediate: true },
+)
+watch(
+  () => props.pidId,
+  () => {
+    paused.value = false
+    followingLatest.value = true
+    viewEndTimestamp = 0
+    syncData()
+    renderChart()
+  },
+)
+watch(
+  () => props.timeWindowMs,
+  (duration) => {
+    visibleDurationMs.value = duration
+    syncData()
+    renderChart()
+  },
 )
 watch(isDark, renderChart)
 
@@ -211,13 +375,21 @@ onMounted(async () => {
 
   chart = echarts.init(chartElement.value)
   chart.on('datazoom', handleDataZoom)
-  resizeObserver = new ResizeObserver(() => chart?.resize())
+  resizeObserver = new ResizeObserver(() => {
+    if (resizeFrame !== undefined) return
+    resizeFrame = window.requestAnimationFrame(() => {
+      resizeFrame = undefined
+      chart?.resize()
+      renderChart()
+    })
+  })
   resizeObserver.observe(chartElement.value)
   renderChart()
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame)
   chart?.off('datazoom', handleDataZoom)
   chart?.dispose()
 })
@@ -259,9 +431,9 @@ onBeforeUnmount(() => {
     <v-card-subtitle>
       {{
         active
-          ? `PID ID：${pidId}${pidName ? ` · ${pidName}` : ''}${
-              paused ? ' · 已暂停' : followingLatest ? '' : ' · 已暂停'
-            }`
+          ? `PID ID：${pidId}${pidName ? ` · ${pidName}` : ''} · 窗口 ${formatDuration(
+              visibleDurationMs,
+            )}${paused ? ' · 已暂停' : followingLatest ? ' · 实时跟随' : ' · 历史回看'}`
           : '未使用（PID ID：0xFF）'
       }}
     </v-card-subtitle>
