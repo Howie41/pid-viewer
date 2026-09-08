@@ -46,6 +46,7 @@ const theme = useTheme()
 const chartElement = ref<HTMLDivElement>()
 const paused = ref(false)
 const followingLatest = ref(true)
+const expanded = ref(false)
 const visibleDurationMs = ref(props.timeWindowMs)
 const active = computed(() => props.pidId !== unusedPidId)
 const isDark = computed(() => theme.global.current.value.dark)
@@ -230,7 +231,11 @@ function getChartOption(): EChartsCoreOption {
       nameGap: 30,
       min: active.value ? axisMinimum : 0,
       max: active.value ? axisMaximum : 1000,
-      axisLabel: { color: textColor },
+      minInterval: 1,
+      axisLabel: {
+        color: textColor,
+        formatter: (value: number) => Math.round(value).toLocaleString(),
+      },
       axisLine: { lineStyle: { color: axisColor } },
       splitLine: { lineStyle: { color: splitLineColor } },
     },
@@ -285,12 +290,14 @@ function renderChart() {
 }
 
 function togglePlayback() {
-  paused.value = !paused.value
-  if (!paused.value) {
+  if (paused.value || !followingLatest.value) {
+    paused.value = false
     followingLatest.value = true
     syncData()
     renderChart()
+    return
   }
+  paused.value = true
 }
 
 function handleDataZoom(event: unknown) {
@@ -310,16 +317,20 @@ function handleDataZoom(event: unknown) {
   const axisMinimum = Math.min(historyStartTimestamp, viewStartTimestamp)
   const axisMaximum = Math.max(latestTimestamp, viewEndTimestamp, axisMinimum + 1)
   const axisDuration = axisMaximum - axisMinimum
-  const startValue =
+  const startValue = Math.round(
     typeof range.startValue === 'number'
       ? range.startValue
-      : axisMinimum + ((range.start ?? 0) / 100) * axisDuration
-  const endValue =
+      : axisMinimum + ((range.start ?? 0) / 100) * axisDuration,
+  )
+  const endValue = Math.round(
     typeof range.endValue === 'number'
       ? range.endValue
-      : axisMinimum + ((range.end ?? 100) / 100) * axisDuration
+      : axisMinimum + ((range.end ?? 100) / 100) * axisDuration,
+  )
 
-  const nextDuration = Math.min(axisDuration, Math.max(minimumTimeWindowMs, endValue - startValue))
+  const nextDuration = Math.round(
+    Math.min(axisDuration, Math.max(minimumTimeWindowMs, endValue - startValue)),
+  )
   const durationChanged =
     Math.abs(nextDuration - visibleDurationMs.value) > Math.max(2, visibleDurationMs.value * 0.005)
 
@@ -337,11 +348,12 @@ function handleDataZoom(event: unknown) {
   renderChart()
 }
 
-function returnToLatest() {
-  paused.value = false
-  followingLatest.value = true
-  syncData()
-  renderChart()
+function toggleExpanded() {
+  expanded.value = !expanded.value
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && expanded.value) expanded.value = false
 }
 
 watch(
@@ -395,11 +407,13 @@ onMounted(async () => {
     })
   })
   resizeObserver.observe(chartElement.value)
+  window.addEventListener('keydown', handleKeydown)
   renderChart()
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  window.removeEventListener('keydown', handleKeydown)
   if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame)
   chart?.off('datazoom', handleDataZoom)
   chart?.dispose()
@@ -407,7 +421,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <v-card>
+  <div v-if="expanded" class="channel-chart-scrim" @click="expanded = false" />
+  <v-card :class="{ 'channel-chart--expanded': expanded }">
     <v-card-title class="d-flex align-center">
       <span>通道 {{ channelId }}</span>
       <v-spacer />
@@ -421,18 +436,17 @@ onBeforeUnmount(() => {
         @click="emit('selectPid', channelId)"
       />
       <v-btn
-        v-if="!followingLatest"
-        icon="mdi-arrow-right-bold-circle-outline"
-        aria-label="回到最新数据"
-        title="回到最新数据"
-        :disabled="!active"
+        :icon="expanded ? 'mdi-fullscreen-exit' : 'mdi-fullscreen'"
+        :aria-label="expanded ? '退出视口放大' : '放大到视口'"
+        :title="expanded ? '退出视口放大' : '放大到视口'"
         size="small"
         variant="text"
-        @click="returnToLatest"
+        @click="toggleExpanded"
       />
       <v-btn
-        :icon="paused ? 'mdi-play' : 'mdi-pause'"
-        :aria-label="paused ? '继续图表' : '暂停图表'"
+        :icon="paused || !followingLatest ? 'mdi-play' : 'mdi-pause'"
+        :aria-label="paused || !followingLatest ? '回到最新数据并继续' : '暂停图表'"
+        :title="paused || !followingLatest ? '回到最新数据并继续' : '暂停图表'"
         :disabled="!active"
         size="small"
         variant="text"
@@ -448,8 +462,8 @@ onBeforeUnmount(() => {
           : '未使用（PID ID：0xFF）'
       }}
     </v-card-subtitle>
-    <v-card-text class="pa-2">
-      <v-responsive :aspect-ratio="16 / 7">
+    <v-card-text class="chart-body pa-2">
+      <v-responsive class="chart-responsive" :aspect-ratio="expanded ? undefined : 16 / 7">
         <div
           ref="chartElement"
           class="h-100 w-100"
@@ -459,3 +473,32 @@ onBeforeUnmount(() => {
     </v-card-text>
   </v-card>
 </template>
+
+<style scoped>
+.channel-chart-scrim {
+  position: fixed;
+  z-index: 2399;
+  inset: 0;
+  background: rgb(0 0 0 / 55%);
+}
+
+.channel-chart--expanded {
+  position: fixed;
+  z-index: 2400;
+  inset: 12px;
+  display: flex;
+  flex-direction: column;
+  height: auto;
+}
+
+.channel-chart--expanded .chart-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.channel-chart--expanded .chart-responsive {
+  flex: 1;
+  min-height: 0;
+}
+</style>
