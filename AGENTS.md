@@ -1,79 +1,160 @@
 # AGENTS.md
 
-Vue 3 + TypeScript + Vuetify 单页应用骨架。业务方向尚未确定，当前仅为通用架子。
+PID Viewer 是一个 Vue 3 + TypeScript + Vuetify 单页应用，用于显示下位机 PID 实例的串口监视数据。协议定义与字段语义以 `docs/data-frame.md` 为准。
 
-## 常用命令
+## 环境与命令
+
+- 包管理器：仅使用 **npm**。
+- Node.js：`>=20.19.0`。
+- 本机没有 pnpm / yarn，不要改用其他包管理器。
 
 ```bash
 npm run dev          # 开发服务器 http://localhost:3000
 npm run type-check   # vue-tsc --noEmit
-npm run lint         # eslint . --fix
+npm run lint         # eslint . --fix（会修改文件）
 npm run format       # prettier --write src/
 npm run build        # type-check + vite build
 npm run preview      # 预览 dist/
 ```
 
-包管理器用 **npm**（本机无 pnpm / yarn）。
+修改代码后至少运行：
 
----
+```bash
+npm run type-check
+npm run build
+```
 
-## ⚠️ 版本约束：不要盲目升级
+针对少量文件只检查、不自动修复时，可直接调用本地 ESLint：
 
-本项目的依赖版本是**刻意锁定**的，不是偷懒没升。以下约束若被打破会直接导致构建或类型检查失效。
+```bash
+.\node_modules\.bin\eslint.cmd src\path\to\file.vue
+```
 
-### TypeScript 必须留在 5.x
+## 技术栈
 
-**不要执行 `npm install typescript@latest`。** 本机 npm registry 上 `typescript` 的 `latest` 是 **7.x**，装上去会同时打断两个环节：
+| 类别 | 当前实现 |
+| --- | --- |
+| UI 框架 | Vue 3.5 + Vuetify 3.13 |
+| 语言 | TypeScript 5.9，严格模式 |
+| 构建 | Vite 7.3 + `@vitejs/plugin-vue` |
+| 路由 | Vue Router 4.6 |
+| 状态管理 | Pinia 4 |
+| 图表 | ECharts 6，按模块注册 |
+| 图标 | Material Design Icons (`@mdi/font`) |
+| 样式预处理 | Sass |
+| 代码质量 | ESLint 9 flat config + Prettier 3 |
 
-1. **`vue-tsc` 会失效。** TS 7 是 Go 原生重写版，**没有暴露 programmatic API**（官方推迟到 7.1）。`vue-tsc` 依赖进程内嵌入 TS 编译器、把 `.vue` 拆成 script/template/render 虚拟文件来做类型检查——它不是命令行调 `tsc`，所以无法驱动 TS 7。React/Node 这类只在命令行调 `tsc` 的项目不受影响，Vue 受影响。
-2. **`typescript-eslint` 会装不上。** 它的 peer 写死 `typescript >=4.8.4 <6.1.0`，从依赖解析层面就排除了 TS 7。
+当前没有引入 Vitest 或其他测试框架。不要假设测试命令或测试工具已经存在。
 
-两条是独立的约束，指向同一结论：**留在 `~5.9.3`**。`vue-tsc@3.3.11` 的 peer 是 `>=5.0.0`，两边都满足。
+## 版本约束：不要盲目升级
 
-> 何时可以解锁：等 TS 7.1 放出 programmatic API、且 `vue-tsc` 发布适配版本之后。届时需要同时确认 `typescript-eslint` 的 peer 上限也已放宽。
+依赖版本是有意保持在当前主版本的。升级前必须同时检查 peer dependency，并运行 `npm run type-check && npm run build`。
 
-### 其余主版本同样有意停在当前档
+### TypeScript 必须保留在 5.x
 
-| 包 | 本项目 | registry latest | 停留原因 |
-|---|---|---|---|
-| `vuetify` | 3.13.x | 4.x | v4 是全新大版本，生态与文档尚未跟上 |
-| `vue-router` | 4.6.x | 5.x | 与 Vuetify 3 一同保持在成熟档 |
-| `vite` | 7.3.x | 8.x | 配套插件在 7 上验证过 |
-| `typescript` | 5.9.x | 7.x | 见上，硬约束 |
+不要执行 `npm install typescript@latest`。项目固定使用 `~5.9.3`，原因有两项：
 
-升级任意一项前，先跑 `npm run type-check && npm run build` 确认没崩。
+1. `vue-tsc@3.3.11` 依赖 TypeScript 的 programmatic API 来处理 `.vue` 虚拟文件。
+2. 当前 `typescript-eslint` 的 peer dependency 不接受不兼容的 TypeScript 主版本。
 
----
+只有在 `vue-tsc` 和 `typescript-eslint` 都明确支持新主版本后，才允许升级 TypeScript。
 
-## ⚠️ 脚手架陷阱
+### 其他主版本
 
-如果需要重新初始化或参考官方脚手架，注意区分三个名字相近的包：
+- Vuetify 保持 3.x，不要直接升级到 4.x。
+- Vue Router 保持 4.x，不要直接升级到 5.x。
+- Vite 保持 7.x，升级主版本前检查 Vue 与 Vuetify 插件兼容性。
 
-- `create-vuetify`（`npm create vuetify`）—— **正确的** Vuetify Material 脚手架。但它是**纯交互式向导，没有 `--preset` 之类的非交互参数**（官方仓库相关 issue 至今未解决），在非交互 shell（CI、agent）里会直接挂起。本项目因此是手写搭建的。
-- `create-vuetify0`（`npm create vuetify0`）/ `@vuetify/cli` —— **不要用。** 它们脚手架的是 `@vuetify/v0`，即 "headless, unstyled Vue 3 primitives"（无样式基元库），**不是** Vuetify Material 组件库。它会提示你选 UnoCSS/Tailwind 作为 CSS 方案——看到这个提示就说明走错路了。
+### Vuetify 脚手架陷阱
 
----
+- `create-vuetify`（`npm create vuetify`）才是 Vuetify Material 脚手架，但它是交互式向导，不适合无交互 shell。
+- 不要使用 `create-vuetify0` 或 `@vuetify/cli`；它们面向 `@vuetify/v0` 的无样式基元，并非本项目使用的 Vuetify Material 组件库。
 
 ## 项目结构
 
-```
+```text
 src/
-├─ main.ts                 # createApp + 注册 router / vuetify
-├─ App.vue                 # <v-app> 外壳
-├─ plugins/vuetify.ts      # createVuetify：mdi 图标集 + light/dark 主题
-├─ router/index.ts         # 路由表 + afterEach 设置 document.title
-├─ layouts/DefaultLayout.vue  # app bar + 抽屉 + 主题切换，含 <v-main>
-├─ views/                  # 页面级组件
-└─ styles/settings.scss    # Vuetify SASS 变量覆盖入口
+├─ main.ts                         # 注册 router、Pinia、Vuetify 和 MDI 字体
+├─ App.vue                         # 根 <v-app> 与 <router-view>
+├─ components/
+│  ├─ DarkModeButton.vue           # Vuetify 明暗主题切换
+│  └─ PidChannelChart.vue          # 单通道 ECharts 卡片
+├─ plugins/
+│  └─ vuetify.ts                   # 图标集与 light/dark 主题
+├─ protocol/
+│  └─ pidProtocol.ts               # PID 帧编解码、CRC 与接收解析器
+├─ router/
+│  └─ index.ts                     # 首页、404 与 document.title
+├─ services/
+│  └─ pidSerialTransport.ts        # Web Serial 连接与字节流读写
+├─ stores/
+│  └─ pid.ts                       # PID 实例、通道历史与连接状态
+├─ styles/
+│  └─ settings.scss                # Vuetify SASS 变量入口
+└─ views/
+   ├─ Index.vue                    # Appbar、四通道网格与模拟采样定时器
+   └─ NotFoundView.vue             # 404 页面
+
+docs/
+└─ data-frame.md                   # PID 串口帧协议
 ```
 
-约定：
+项目当前没有 `layouts/DefaultLayout.vue`。Appbar 位于 `Index.vue`，404 页面不包含首页 Appbar。
 
-- **路径别名 `@/` 指向 `src/`**，在 `vite.config.ts` 和 `tsconfig.json` 两处都配了，改动需同步。
-- **Vuetify 组件按需自动引入**（`vite-plugin-vuetify` 的 `autoImport`），模板里直接写 `<v-btn>` 即可，不用手动 import 或注册。
-- **`import 'vuetify/styles'` 会被插件重写到 `src/styles/settings.scss`**，定制 SASS 变量改那个文件，不要另开入口。
-- 带布局的页面挂在 `DefaultLayout` 的 `children` 下；404 页是顶层路由，**故意不套布局**（无 app bar）。
+## 代码与配置约定
 
-## 尚未引入
+### Vue 与 TypeScript
 
-**Pinia**（状态管理）和 **Vitest**（测试）都没装。需要时再加，别默认它们存在。
+- Vue 组件使用 `<script setup lang="ts">`。
+- TypeScript 开启严格模式、未使用变量检查和 bundler 模块解析。
+- 类型导入使用 `import type`，与 `verbatimModuleSyntax` 保持兼容。
+- 路径别名 `@/` 指向 `src/`，配置分布在 `vite.config.ts` 与 `tsconfig.json`；修改时必须同步。
+
+### Vuetify 优先
+
+- 页面布局、间距、响应式、卡片、按钮和主题优先使用 Vuetify 组件、props 与工具类。
+- 能用 `v-container`、`v-row`、`v-col`、`v-card`、`v-responsive` 或 Vuetify 工具类完成的内容，不要手写 CSS。
+- Vuetify 组件由 `vite-plugin-vuetify` 自动按需引入；模板中直接使用，不要手动 import 或注册。
+- `import 'vuetify/styles'` 会经插件重写到 `src/styles/settings.scss`。全局 Vuetify SASS 变量只在该入口配置，不要新增平行入口。
+- MDI 图标集已经配置，优先使用 `mdi-*` 图标名。
+
+### ECharts
+
+- 使用 `echarts/core` 并显式注册所需组件、图表和渲染器，避免改为全量 ECharts 导入。
+- `PidChannelChart.vue` 负责单个图表的初始化、更新、暂停快照、`dataZoom` 时间选择、尺寸监听和销毁。
+- ECharts 实例必须在组件卸载时 `dispose()`，事件监听和 `ResizeObserver` 也必须清理。
+- 页面层只负责组织通道和提供数据，不要把单图表生命周期重新放回 `Index.vue`。
+
+### Pinia
+
+- Pinia 已在 `main.ts` 注册。
+- `stores/pid.ts` 是 PID 实例、四个监视通道、采样历史与串口连接状态的唯一数据源。
+- 协议编解码和 Web Serial 流管理必须留在独立 `.ts` 文件中，Vue 组件只读取状态和调用 store action。
+- 串口连接由 `Index.vue` 触发，页面卸载时必须断开并释放流锁。
+
+### 格式化与 lint
+
+- Prettier：无分号、单引号、100 列、2 空格、尾逗号、LF。
+- ESLint 负责代码质量，不运行 Prettier 规则。
+- `npm run lint` 带 `--fix`，运行前注意它会修改整个项目内的匹配文件。
+
+## PID 协议约定
+
+协议细节不要凭 UI 代码推断，以 `docs/data-frame.md` 为唯一来源。实现时特别注意：
+
+- 最多同时监视 4 个通道，通道编号为 `0~3`。
+- 每个通道绑定一个 `Pid_Id`；未使用通道必须使用 `0xFF`。
+- `MONITOR` 帧为每个通道提供 `Pid_Id`、`ref` 和 `out`。
+- `Timestamp` 是毫秒单位的 RTOS tick。
+- 多字节值使用 Little-Endian；浮点数使用 IEEE 754 `float32`。
+- CRC 使用 `CRC-16/CCITT-FALSE`，发送时为 Little-Endian。
+- 不要直接序列化 C/C++ 结构体。
+
+每个通道必须维护独立的 `ref/out` 历史，不要把同一组数据复制成四个通道。连接后，应用会依次读取 PID 实例，并把最前面的四个实例绑定到监视通道；不足四个时用 `0xFF` 补齐。
+
+## 修改边界
+
+- 不要无关升级依赖或重建脚手架。
+- 不要假设不存在的布局、测试框架或串口实现。
+- 修改协议字段、帧长度或 CRC 行为前，先同步更新并核对 `docs/data-frame.md`。
+- 保持首页结构简单：顶部 Appbar，下方四通道图表网格；额外界面元素应由明确需求驱动。
