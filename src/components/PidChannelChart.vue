@@ -42,6 +42,7 @@ const emit = defineEmits<{
 const unusedPidId = 0xff
 const minimumTimeWindowMs = 100
 const pointsPerPixel = 2
+const viewportOverscanRatio = 2
 const theme = useTheme()
 const chartElement = ref<HTMLDivElement>()
 const paused = ref(false)
@@ -53,6 +54,8 @@ const isDark = computed(() => theme.global.current.value.dark)
 let chart: echarts.ECharts | undefined
 let resizeObserver: ResizeObserver | undefined
 let resizeFrame: number | undefined
+let dataZoomFrame: number | undefined
+let pendingDataZoomEvent: unknown
 let displayedSamples: MonitorSample[] = []
 let historyStartTimestamp = 0
 let latestTimestamp = 0
@@ -103,14 +106,17 @@ function syncData() {
 
   visibleDurationMs.value = Math.max(minimumTimeWindowMs, visibleDurationMs.value)
   viewStartTimestamp = viewEndTimestamp - visibleDurationMs.value
-
-  const startIndex = Math.max(
-    0,
-    findWindowStart(props.samples, Math.max(historyStartTimestamp, viewStartTimestamp)) - 1,
+  const overscanDuration = visibleDurationMs.value * viewportOverscanRatio
+  const bufferedStartTimestamp = Math.max(
+    historyStartTimestamp,
+    viewStartTimestamp - overscanDuration,
   )
+  const bufferedEndTimestamp = Math.min(latestTimestamp, viewEndTimestamp + overscanDuration)
+
+  const startIndex = Math.max(0, findWindowStart(props.samples, bufferedStartTimestamp) - 1)
   const endIndex = Math.min(
     props.samples.length,
-    findWindowEnd(props.samples, viewEndTimestamp) + 1,
+    findWindowEnd(props.samples, bufferedEndTimestamp) + 1,
   )
   displayedSamples = props.samples.slice(startIndex, endIndex)
 }
@@ -182,6 +188,29 @@ function formatDuration(durationMs: number) {
   return `${(durationMs / 60_000).toFixed(durationMs < 600_000 ? 1 : 0)} min`
 }
 
+function getSeriesOption() {
+  return active.value
+    ? [
+        {
+          name: 'ref',
+          type: 'line',
+          showSymbol: false,
+          lineStyle: { type: 'dashed', width: 1.5 },
+          animation: false,
+          data: buildSeriesData('ref'),
+        },
+        {
+          name: 'measure',
+          type: 'line',
+          showSymbol: false,
+          smooth: false,
+          animation: false,
+          data: buildSeriesData('measure'),
+        },
+      ]
+    : []
+}
+
 function getChartOption(): EChartsCoreOption {
   const textColor = isDark.value ? '#bdbdbd' : '#616161'
   const axisColor = isDark.value ? '#616161' : '#bdbdbd'
@@ -214,7 +243,7 @@ function getChartOption(): EChartsCoreOption {
             type: 'inside',
             xAxisIndex: 0,
             filterMode: 'none',
-            throttle: 100,
+            throttle: 16,
             zoomOnMouseWheel: true,
             moveOnMouseMove: true,
             moveOnMouseWheel: false,
@@ -259,26 +288,7 @@ function getChartOption(): EChartsCoreOption {
             },
           },
         ],
-    series: active.value
-      ? [
-          {
-            name: 'ref',
-            type: 'line',
-            showSymbol: false,
-            lineStyle: { type: 'dashed', width: 1.5 },
-            animation: false,
-            data: buildSeriesData('ref'),
-          },
-          {
-            name: 'measure',
-            type: 'line',
-            showSymbol: false,
-            smooth: false,
-            animation: false,
-            data: buildSeriesData('measure'),
-          },
-        ]
-      : [],
+    series: getSeriesOption(),
   }
 }
 
@@ -287,6 +297,16 @@ function renderChart() {
     lazyUpdate: true,
     replaceMerge: ['series'],
   })
+}
+
+function renderVisibleSeries() {
+  chart?.setOption(
+    { series: getSeriesOption() },
+    {
+      lazyUpdate: false,
+      replaceMerge: ['series'],
+    },
+  )
 }
 
 function togglePlayback() {
@@ -300,7 +320,7 @@ function togglePlayback() {
   paused.value = true
 }
 
-function handleDataZoom(event: unknown) {
+function applyDataZoom(event: unknown) {
   const dataZoomEvent = event as {
     start?: number
     end?: number
@@ -345,7 +365,19 @@ function handleDataZoom(event: unknown) {
   }
 
   syncData()
-  renderChart()
+  renderVisibleSeries()
+}
+
+function handleDataZoom(event: unknown) {
+  pendingDataZoomEvent = event
+  if (dataZoomFrame !== undefined) return
+
+  dataZoomFrame = window.requestAnimationFrame(() => {
+    dataZoomFrame = undefined
+    const latestEvent = pendingDataZoomEvent
+    pendingDataZoomEvent = undefined
+    applyDataZoom(latestEvent)
+  })
 }
 
 function toggleExpanded() {
@@ -396,7 +428,10 @@ onMounted(async () => {
   await nextTick()
   if (!chartElement.value) return
 
-  chart = echarts.init(chartElement.value)
+  chart = echarts.init(chartElement.value, undefined, {
+    renderer: 'canvas',
+    useDirtyRect: true,
+  })
   chart.on('datazoom', handleDataZoom)
   resizeObserver = new ResizeObserver(() => {
     if (resizeFrame !== undefined) return
@@ -415,6 +450,7 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('keydown', handleKeydown)
   if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame)
+  if (dataZoomFrame !== undefined) window.cancelAnimationFrame(dataZoomFrame)
   chart?.off('datazoom', handleDataZoom)
   chart?.dispose()
 })
