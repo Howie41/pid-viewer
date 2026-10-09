@@ -100,12 +100,18 @@ function syncData() {
 
   historyStartTimestamp = Math.max(firstTick, lastTick - props.historyDurationMs)
   latestTimestamp = lastTick
-  if (followingLatest.value || viewEndTimestamp === 0) viewEndTimestamp = latestTimestamp
-  else
-    viewEndTimestamp = Math.min(Math.max(viewEndTimestamp, historyStartTimestamp), latestTimestamp)
-
   visibleDurationMs.value = Math.max(minimumTimeWindowMs, visibleDurationMs.value)
-  viewStartTimestamp = viewEndTimestamp - visibleDurationMs.value
+  if (followingLatest.value || viewEndTimestamp === 0) {
+    viewEndTimestamp = latestTimestamp
+  } else {
+    const minimumViewEnd = Math.min(
+      latestTimestamp,
+      historyStartTimestamp + visibleDurationMs.value,
+    )
+    viewEndTimestamp = Math.min(Math.max(viewEndTimestamp, minimumViewEnd), latestTimestamp)
+  }
+
+  viewStartTimestamp = Math.max(historyStartTimestamp, viewEndTimestamp - visibleDurationMs.value)
   const overscanDuration = visibleDurationMs.value * viewportOverscanRatio
   const bufferedStartTimestamp = Math.max(
     historyStartTimestamp,
@@ -215,7 +221,7 @@ function getChartOption(): EChartsCoreOption {
   const textColor = isDark.value ? '#bdbdbd' : '#616161'
   const axisColor = isDark.value ? '#616161' : '#bdbdbd'
   const splitLineColor = isDark.value ? '#424242' : '#eeeeee'
-  const axisMinimum = Math.min(historyStartTimestamp, viewStartTimestamp)
+  const axisMinimum = historyStartTimestamp
   const axisMaximum = Math.max(latestTimestamp, viewEndTimestamp, axisMinimum + 1)
 
   return {
@@ -334,7 +340,7 @@ function applyDataZoom(event: unknown) {
     }>
   }
   const range = dataZoomEvent.batch?.[0] ?? dataZoomEvent
-  const axisMinimum = Math.min(historyStartTimestamp, viewStartTimestamp)
+  const axisMinimum = historyStartTimestamp
   const axisMaximum = Math.max(latestTimestamp, viewEndTimestamp, axisMinimum + 1)
   const axisDuration = axisMaximum - axisMinimum
   const startValue = Math.round(
