@@ -26,6 +26,7 @@ const props = withDefaults(
   defineProps<{
     channelId: number
     canSelectPid?: boolean
+    canTunePid?: boolean
     pidId: number
     pidName?: string
     revision: number
@@ -33,10 +34,17 @@ const props = withDefaults(
     historyDurationMs?: number
     timeWindowMs?: number
   }>(),
-  { canSelectPid: false, historyDurationMs: 10 * 60_000, pidName: '', timeWindowMs: 30_000 },
+  {
+    canSelectPid: false,
+    canTunePid: false,
+    historyDurationMs: 10 * 60_000,
+    pidName: '',
+    timeWindowMs: 30_000,
+  },
 )
 const emit = defineEmits<{
   selectPid: [channelId: number]
+  tunePid: [pidId: number]
 }>()
 
 const unusedPidId = 0xff
@@ -468,6 +476,15 @@ onBeforeUnmount(() => {
     <v-card-title class="d-flex align-center">
       <span>通道 {{ channelId }}</span>
       <v-spacer />
+      <v-btn
+        icon="mdi-tune"
+        aria-label="调节 PID 参数"
+        title="调节 PID 参数"
+        :disabled="!canTunePid || !active"
+        size="small"
+        variant="text"
+        @click="emit('tunePid', pidId)"
+      />
       <v-btn
         icon="mdi-list-box-outline"
         aria-label="选择 PID 实例"

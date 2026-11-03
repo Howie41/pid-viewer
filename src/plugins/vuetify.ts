@@ -4,6 +4,9 @@ import { aliases, mdi } from 'vuetify/iconsets/mdi'
 // 该导入会被 vite-plugin-vuetify 重写到 src/styles/settings.scss
 import 'vuetify/styles'
 
+export const themePreferenceStorageKey = 'pid-viewer.theme'
+const savedTheme = localStorage.getItem(themePreferenceStorageKey)
+
 export default createVuetify({
   icons: {
     defaultSet: 'mdi',
@@ -11,7 +14,7 @@ export default createVuetify({
     sets: { mdi },
   },
   theme: {
-    defaultTheme: 'light',
+    defaultTheme: savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'system',
     themes: {
       light: {
         dark: false,

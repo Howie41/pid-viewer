@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
-import DarkModeButton from '@/components/DarkModeButton.vue'
-import PidChannelChart from '@/components/PidChannelChart.vue'
-import PidInstanceDialog from '@/components/PidInstanceDialog.vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
 import { usePidStore } from '@/stores/pid'
+import { useToastStore } from '@/stores/toast'
+import DebugLogView from './DebugLogView.vue'
+import PidMonitorView from './PidMonitorView.vue'
 
 const pidStore = usePidStore()
-const pidDialogOpen = ref(false)
+const toast = useToastStore()
 const settingsDialogOpen = ref(false)
-const selectedChannelId = ref<number>()
+const activeTabStorageKey = 'pid-viewer.active-tab'
+const activeTab = ref<'monitor' | 'logs'>(
+  localStorage.getItem(activeTabStorageKey) === 'logs' ? 'logs' : 'monitor',
+)
+
+watch(activeTab, (tab) => localStorage.setItem(activeTabStorageKey, tab))
 
 const statusLabels = {
   unsupported: '浏览器不支持串口',
@@ -21,18 +26,22 @@ const statusLabels = {
 } as const
 
 async function toggleConnection() {
-  if (pidStore.connected) await pidStore.disconnect()
-  else await pidStore.connect()
+  if (pidStore.connected) {
+    const disconnected = await pidStore.disconnect()
+    if (disconnected) toast.show('串口已断开')
+    else toast.show(pidStore.errorMessage || '断开串口失败', 'error')
+  } else {
+    await pidStore.connect()
+    if (pidStore.connected) toast.show('串口已连接', 'success')
+  }
 }
 
-function getPidName(pidId: number) {
-  return pidStore.getInstance(pidId)?.name
-}
-
-function openPidSelector(channelId: number) {
-  selectedChannelId.value = channelId
-  pidDialogOpen.value = true
-}
+watch(
+  () => pidStore.connectionStatus,
+  (status) => {
+    if (status === 'error') toast.show(pidStore.errorMessage || '串口连接错误', 'error')
+  },
+)
 
 onBeforeUnmount(() => {
   pidStore.setTestMode(false)
@@ -42,20 +51,24 @@ onBeforeUnmount(() => {
 
 <template>
   <v-app-bar color="primary">
-    <v-app-bar-title>PID Viewer</v-app-bar-title>
+    <v-tabs v-model="activeTab" aria-label="工作台页面" density="compact">
+      <v-tab value="monitor" aria-controls="pid-monitor-panel">PID 监视</v-tab>
+      <v-tab value="logs" aria-controls="debug-log-panel">调试日志</v-tab>
+    </v-tabs>
     <v-spacer />
-    <v-chip class="mr-2" size="small" variant="outlined">
+    <v-chip class="mr-2 d-none d-sm-inline-flex" size="small" variant="outlined">
       {{ pidStore.testMode ? '测试模式' : statusLabels[pidStore.connectionStatus] }}
     </v-chip>
     <v-btn
       :disabled="pidStore.connectionStatus === 'unsupported'"
       :loading="pidStore.busy"
       :prepend-icon="pidStore.connected ? 'mdi-lan-disconnect' : 'mdi-usb-port'"
+      :aria-label="pidStore.connected ? '断开串口' : '连接串口'"
       :title="pidStore.errorMessage || statusLabels[pidStore.connectionStatus]"
       variant="text"
       @click="toggleConnection"
     >
-      {{ pidStore.connected ? '断开' : '连接串口' }}
+      <span class="d-none d-sm-inline">{{ pidStore.connected ? '断开' : '连接串口' }}</span>
     </v-btn>
     <v-btn
       icon="mdi-cog-outline"
@@ -64,29 +77,32 @@ onBeforeUnmount(() => {
       variant="text"
       @click="settingsDialogOpen = true"
     />
-    <DarkModeButton />
   </v-app-bar>
 
   <v-main>
-    <v-container fluid class="pa-3">
-      <v-row dense>
-        <v-col v-for="channel in pidStore.channels" :key="channel.id" cols="12" md="6">
-          <PidChannelChart
-            :channel-id="channel.id"
-            :can-select-pid="pidStore.connected"
-            :pid-id="channel.pidId"
-            :pid-name="getPidName(channel.pidId)"
-            :revision="channel.revision"
-            :samples="channel.samples"
-            :history-duration-ms="pidStore.historyDurationMs"
-            :time-window-ms="Math.min(30_000, pidStore.historyDurationMs)"
-            @select-pid="openPidSelector"
-          />
-        </v-col>
-      </v-row>
-    </v-container>
+    <v-tabs-window v-model="activeTab">
+      <v-tabs-window-item
+        id="pid-monitor-panel"
+        value="monitor"
+        role="tabpanel"
+        aria-label="PID 监视"
+        :transition="false"
+        :reverse-transition="false"
+      >
+        <PidMonitorView />
+      </v-tabs-window-item>
+      <v-tabs-window-item
+        id="debug-log-panel"
+        value="logs"
+        role="tabpanel"
+        aria-label="调试日志"
+        :transition="false"
+        :reverse-transition="false"
+      >
+        <DebugLogView :active="activeTab === 'logs'" />
+      </v-tabs-window-item>
+    </v-tabs-window>
   </v-main>
 
-  <PidInstanceDialog v-model="pidDialogOpen" :channel-id="selectedChannelId" />
   <SettingsDialog v-model="settingsDialogOpen" />
 </template>
