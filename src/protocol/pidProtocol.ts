@@ -110,6 +110,12 @@ export function encodeSelectChannels(pidIds: readonly number[]) {
 }
 
 export function encodeSetPid(pidId: number, kp: number, ki: number, kd: number) {
+  if (!Number.isInteger(pidId) || pidId < 0 || pidId >= UNUSED_PID_ID) {
+    throw new PidProtocolError('无效 PID 编号')
+  }
+  if (![kp, ki, kd].every((value) => Number.isFinite(Math.fround(value)))) {
+    throw new PidProtocolError('PID 参数必须是有限的 float32 数值')
+  }
   const payload = new Uint8Array(13)
   const view = new DataView(payload.buffer)
   view.setUint8(0, pidId)

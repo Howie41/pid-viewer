@@ -98,6 +98,7 @@ export const usePidStore = defineStore('pid', () => {
   const lastTimestamp = ref(0)
   const historyDurationMs = ref(loadHistoryDuration())
   const testMode = ref(false)
+  const requestPending = ref(false)
   const waiters: FrameWaiter[] = []
   const pendingMonitorFrames: MonitorFrame[] = []
   const pendingTestSamples: PidTestSample[] = []
@@ -293,14 +294,15 @@ export const usePidStore = defineStore('pid', () => {
 
   function handleFrame(frame: ReceivedFrame) {
     if (frame.type === FrameType.PidInfo && frame.status === PidInfoStatus.Ok) {
+      const current = instances.value.find((item) => item.id === frame.pidId)
       upsertInstance({
         id: frame.pidId,
         name: frame.name,
         kp: frame.kp,
         ki: frame.ki,
         kd: frame.kd,
-        ref: 0,
-        measure: 0,
+        ref: current?.ref ?? 0,
+        measure: current?.measure ?? 0,
       })
     }
 
@@ -312,7 +314,7 @@ export const usePidStore = defineStore('pid', () => {
     if (
       frame.type === FrameType.Ack &&
       frame.commandType === FrameType.SetPid &&
-      frame.status === AckStatus.Ok
+      (frame.status === AckStatus.Ok || frame.status === AckStatus.InvalidParameter)
     ) {
       const current = instances.value.find((item) => item.id === frame.pidId)
       if (current) upsertInstance({ ...current, kp: frame.kp, ki: frame.ki, kd: frame.kd })
@@ -354,7 +356,11 @@ export const usePidStore = defineStore('pid', () => {
     predicate: (frame: ReceivedFrame) => frame is T,
   ) {
     if (!transport) throw new Error('串口尚未连接')
+    if (requestPending.value) throw new Error('正在等待下位机响应，请稍后重试')
+    requestPending.value = true
     const response = waitForFrame(predicate)
+    // A write failure can reject the waiter before it is awaited.
+    void response.catch(() => undefined)
     try {
       await transport.send(bytes)
       return await response
@@ -362,6 +368,8 @@ export const usePidStore = defineStore('pid', () => {
       const normalized = asError(error)
       rejectWaiters(normalized)
       throw normalized
+    } finally {
+      requestPending.value = false
     }
   }
 
@@ -395,6 +403,20 @@ export const usePidStore = defineStore('pid', () => {
     }
   }
 
+  async function refreshPidParameters(pidId: number) {
+    if (!connected.value) throw new Error('串口尚未连接')
+    if (requestPending.value) throw new Error('正在等待下位机响应，请稍后重试')
+    if (!Number.isInteger(pidId) || pidId < 0 || pidId >= UNUSED_PID_ID) {
+      throw new Error('无效 PID 编号')
+    }
+    const response = await readPid(pidId)
+    if (response.status === PidInfoStatus.NotFound) throw new Error('PID 实例不存在')
+    if (response.status !== PidInfoStatus.Ok) {
+      throw new Error(`未知 PID_INFO 状态：${response.status}`)
+    }
+    return response
+  }
+
   async function selectChannels(pidIds: readonly number[]) {
     const response = await sendAndWait(
       encodeSelectChannels(pidIds),
@@ -412,6 +434,7 @@ export const usePidStore = defineStore('pid', () => {
   }
 
   async function setPid(pidId: number, kp: number, ki: number, kd: number) {
+    if (!connected.value) throw new Error('串口尚未连接')
     const response = await sendAndWait(
       encodeSetPid(pidId, kp, ki, kd),
       (frame): frame is AckFrame =>
@@ -476,11 +499,14 @@ export const usePidStore = defineStore('pid', () => {
   async function disconnect() {
     clearPendingMonitorFrames()
     rejectWaiters(new Error('串口连接已断开'))
+    let disconnected = true
     await transport?.disconnect().catch((error) => {
       errorMessage.value = asError(error).message
+      disconnected = false
     })
     transport = undefined
     connectionStatus.value = supported ? 'disconnected' : 'unsupported'
+    return disconnected
   }
 
   function getInstance(pidId: number) {
@@ -495,6 +521,7 @@ export const usePidStore = defineStore('pid', () => {
     lastTimestamp,
     historyDurationMs,
     testMode,
+    requestPending,
     connected,
     busy,
     connect,
@@ -502,6 +529,7 @@ export const usePidStore = defineStore('pid', () => {
     setHistoryDurationMs,
     setTestMode,
     discoverPidInstances,
+    refreshPidParameters,
     selectChannels,
     setPid,
     getInstance,
